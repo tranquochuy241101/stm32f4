@@ -1,130 +1,113 @@
 /*
- * Software License Agreement (BSD License)
- *
- * Copyright (c) 2011, Willow Garage, Inc.
- * All rights reserved.
+ * Copyright (C) 2009, Willow Garage, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
+ * modification, are permitted provided that the following conditions are met:
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the names of Stanford University or Willow Garage, Inc. nor the names of its
+ *     contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
  *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above
- *    copyright notice, this list of conditions and the following
- *    disclaimer in the documentation and/or other materials provided
- *    with the distribution.
- *  * Neither the name of Willow Garage, Inc. nor the names of its
- *    contributors may be used to endorse or promote prducts derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _ROS_SERVICE_SERVER_H_
-#define _ROS_SERVICE_SERVER_H_
+#ifndef ROSCPP_SERVICE_HANDLE_H
+#define ROSCPP_SERVICE_HANDLE_H
 
-#include "rosserial_msgs/TopicInfo.h"
-
-#include "ros/publisher.h"
-#include "ros/subscriber.h"
+#include "ros/forwards.h"
+#include "common.h"
 
 namespace ros
 {
 
-template<typename MReq , typename MRes, typename ObjT = void>
-class ServiceServer : public Subscriber_
+/**
+ * \brief Manages an service advertisement.
+ *
+ * A ServiceServer should always be created through a call to NodeHandle::advertiseService(), or copied from
+ * one that was.  Once all copies of a specific
+ * ServiceServer go out of scope, the service associated with it will be unadvertised and the service callback
+ * will stop being called.
+ */
+class ROSCPP_DECL ServiceServer
 {
 public:
-  typedef void(ObjT::*CallbackT)(const MReq&,  MRes&);
+  ServiceServer() {}
+  ServiceServer(const ServiceServer& rhs);
+  ~ServiceServer();
+  ServiceServer& operator=(const ServiceServer& other) = default;
 
-  ServiceServer(const char* topic_name, CallbackT cb, ObjT* obj) :
-    pub(topic_name, &resp, rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosserial_msgs::TopicInfo::ID_PUBLISHER),
-    obj_(obj)
-  {
-    this->topic_ = topic_name;
-    this->cb_ = cb;
-  }
+  /**
+   * \brief Unadvertise the service associated with this ServiceServer
+   *
+   * This method usually does not need to be explicitly called, as automatic shutdown happens when
+   * all copies of this ServiceServer go out of scope
+   *
+   * This method overrides the automatic reference counted unadvertise, and immediately
+   * unadvertises the service associated with this ServiceServer
+   */
+  void shutdown();
 
-  // these refer to the subscriber
-  virtual void callback(unsigned char *data) override
+  std::string getService() const;
+
+  operator void*() const { return (impl_ && impl_->isValid()) ? (void*)1 : (void*)0; }
+
+  bool operator<(const ServiceServer& rhs) const
   {
-    req.deserialize(data);
-    (obj_->*cb_)(req, resp);
-    pub.publish(&resp);
-  }
-  virtual const char * getMsgType() override
-  {
-    return this->req.getType();
-  }
-  virtual const char * getMsgMD5() override
-  {
-    return this->req.getMD5();
-  }
-  virtual int getEndpointType() override
-  {
-    return rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
+    return impl_ < rhs.impl_;
   }
 
-  MReq req;
-  MRes resp;
-  Publisher pub;
+  bool operator==(const ServiceServer& rhs) const
+  {
+    return impl_ == rhs.impl_;
+  }
+
+  bool operator!=(const ServiceServer& rhs) const
+  {
+    return impl_ != rhs.impl_;
+  }
+
 private:
-  CallbackT cb_;
-  ObjT* obj_;
+  ServiceServer(const std::string& service, const NodeHandle& node_handle);
+
+  class Impl
+  {
+  public:
+    Impl();
+    ~Impl();
+
+    void unadvertise();
+    bool isValid() const;
+
+    std::string service_;
+    NodeHandlePtr node_handle_;
+    bool unadvertised_;
+  };
+  typedef boost::shared_ptr<Impl> ImplPtr;
+  typedef boost::weak_ptr<Impl> ImplWPtr;
+
+  ImplPtr impl_;
+
+  friend class NodeHandle;
+  friend class NodeHandleBackingCollection;
 };
-
-template<typename MReq , typename MRes>
-class ServiceServer<MReq, MRes, void> : public Subscriber_
-{
-public:
-  typedef void(*CallbackT)(const MReq&,  MRes&);
-
-  ServiceServer(const char* topic_name, CallbackT cb) :
-    pub(topic_name, &resp, rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosserial_msgs::TopicInfo::ID_PUBLISHER)
-  {
-    this->topic_ = topic_name;
-    this->cb_ = cb;
-  }
-
-  // these refer to the subscriber
-  virtual void callback(unsigned char *data) override
-  {
-    req.deserialize(data);
-    cb_(req, resp);
-    pub.publish(&resp);
-  }
-  virtual const char * getMsgType() override
-  {
-    return this->req.getType();
-  }
-  virtual const char * getMsgMD5() override
-  {
-    return this->req.getMD5();
-  }
-  virtual int getEndpointType() override
-  {
-    return rosserial_msgs::TopicInfo::ID_SERVICE_SERVER + rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
-  }
-
-  MReq req;
-  MRes resp;
-  Publisher pub;
-private:
-  CallbackT cb_;
-};
+typedef std::vector<ServiceServer> V_ServiceServer;
 
 }
 
-#endif
+#endif // ROSCPP_SERVICE_HANDLE_H
+
+
