@@ -20,16 +20,14 @@ std_msgs::String str_msg;
 ros::Publisher chatter("chatter", &str_msg);
 char hello[] = "Hello world!";
 
-//Subcriber
+//Subscriber
 ros::Subscriber<std_msgs::UInt8> vel_sub("velocity", &vel_cb);
 
 //Create a publisher node to topic PID_data
 ros::Publisher pid_pub("PID_data", &str_msg);
 pid_plot::Num pid_msg;
 
-pid_msg.output_rpm = 0;
-pid_msg.input_setpoint = 0;
-pid_msg.output_controller = 0;
+
 
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
@@ -49,6 +47,9 @@ void setup(void)
 
 void loop(void)
 {
+	pid_msg.output_rpm = 0;
+	pid_msg.input_setpoint = 0;
+	pid_msg.output_controller = 0;
   str_msg.data = hello;
   chatter.publish(&str_msg);
   pid_pub.publish(&pid_msg);
