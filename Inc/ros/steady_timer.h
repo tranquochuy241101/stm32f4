@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009, Willow Garage, Inc.
+ * Copyright (C) 2017, Felix Ruess, Roboception GmbH
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,71 +25,74 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef ROSCPP_SUBSCRIBER_HANDLE_H
-#define ROSCPP_SUBSCRIBER_HANDLE_H
+#ifndef ROSCPP_STEADY_TIMER_H
+#define ROSCPP_STEADY_TIMER_H
 
 #include "common.h"
-#include "ros/forwards.h"
-#include "ros/subscription_callback_helper.h"
+#include "forwards.h"
+#include "steady_timer_options.h"
 
 namespace ros
 {
 
 /**
- * \brief Manages an subscription callback on a specific topic.
+ * \brief Manages a steady-clock timer callback
  *
- * A Subscriber should always be created through a call to NodeHandle::subscribe(), or copied from one
+ * A SteadyTimer should always be created through a call to NodeHandle::createSteadyTimer(), or copied from one
  * that was. Once all copies of a specific
- * Subscriber go out of scope, the subscription callback associated with that handle will stop
- * being called.  Once all Subscriber for a given topic go out of scope the topic will be unsubscribed.
+ * SteadyTimer go out of scope, the callback associated with that handle will stop
+ * being called.
  */
-class ROSCPP_DECL Subscriber
+class ROSCPP_DECL SteadyTimer
 {
 public:
-  Subscriber() {}
-  Subscriber(const Subscriber& rhs);
-  ~Subscriber();
-  Subscriber& operator=(const Subscriber& other) = default;
+  SteadyTimer() {}
+  SteadyTimer(const SteadyTimer& rhs);
+  ~SteadyTimer();
+  SteadyTimer& operator=(const SteadyTimer& other) = default;
 
   /**
-   * \brief Unsubscribe the callback associated with this Subscriber
-   *
-   * This method usually does not need to be explicitly called, as automatic shutdown happens when
-   * all copies of this Subscriber go out of scope
-   *
-   * This method overrides the automatic reference counted unsubscribe, and immediately
-   * unsubscribes the callback associated with this Subscriber
+   * \brief Start the timer.  Does nothing if the timer is already started.
    */
-  void shutdown();
-
-  std::string getTopic() const;
+  void start();
+  /**
+   * \brief Stop the timer.  Once this call returns, no more callbacks will be called.  Does
+   * nothing if the timer is already stopped.
+   */
+  void stop();
 
   /**
-   * \brief Returns the number of publishers this subscriber is connected to
+   * \brief Returns whether or not the timer has any pending events to call.
    */
-  uint32_t getNumPublishers() const;
+  bool hasPending();
 
-  operator void*() const { return (impl_ && impl_->isValid()) ? (void*)1 : (void*)0; }
+  /**
+   * \brief Set the period of this timer
+   * \param reset Whether to reset the timer. If true, timer ignores elapsed time and next cb occurs at now()+period
+   */
+  void setPeriod(const WallDuration& period, bool reset=true);
 
-  bool operator<(const Subscriber& rhs) const
+  bool hasStarted() const { return impl_ && impl_->hasStarted(); }
+  bool isValid() { return impl_ && impl_->isValid(); }
+  operator void*() { return isValid() ? (void *) 1 : (void *) 0; }
+
+  bool operator<(const SteadyTimer& rhs)
   {
     return impl_ < rhs.impl_;
   }
 
-  bool operator==(const Subscriber& rhs) const
+  bool operator==(const SteadyTimer& rhs)
   {
     return impl_ == rhs.impl_;
   }
 
-  bool operator!=(const Subscriber& rhs) const
+  bool operator!=(const SteadyTimer& rhs)
   {
     return impl_ != rhs.impl_;
   }
 
 private:
-
-  Subscriber(const std::string& topic, const NodeHandle& node_handle, 
-	     const SubscriptionCallbackHelperPtr& helper);
+  SteadyTimer(const SteadyTimerOptions& ops);
 
   class Impl
   {
@@ -97,13 +100,23 @@ private:
     Impl();
     ~Impl();
 
-    void unsubscribe();
-    bool isValid() const;
+    bool hasStarted() const;
+    bool isValid();
+    bool hasPending();
+    void setPeriod(const WallDuration &period, bool reset=true);
 
-    std::string topic_;
-    NodeHandlePtr node_handle_;
-    SubscriptionCallbackHelperPtr helper_;
-    bool unsubscribed_;
+    void start();
+    void stop();
+
+    bool started_;
+    int32_t timer_handle_;
+
+    WallDuration period_;
+    SteadyTimerCallback callback_;
+    CallbackQueueInterface *callback_queue_;
+    VoidConstWPtr tracked_object_;
+    bool has_tracked_object_;
+    bool oneshot_;
   };
   typedef boost::shared_ptr<Impl> ImplPtr;
   typedef boost::weak_ptr<Impl> ImplWPtr;
@@ -111,12 +124,8 @@ private:
   ImplPtr impl_;
 
   friend class NodeHandle;
-  friend class NodeHandleBackingCollection;
 };
-typedef std::vector<Subscriber> V_Subscriber;
 
 }
 
-#endif // ROSCPP_PUBLISHER_HANDLE_H
-
-
+#endif

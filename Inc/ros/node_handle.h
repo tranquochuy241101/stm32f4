@@ -1,644 +1,2203 @@
 /*
- * Software License Agreement (BSD License)
- *
- * Copyright (c) 2011, Willow Garage, Inc.
- * All rights reserved.
+ * Copyright (C) 2009, Willow Garage, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
+ * modification, are permitted provided that the following conditions are met:
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the names of Stanford University or Willow Garage, Inc. nor the names of its
+ *     contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
  *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above
- *    copyright notice, this list of conditions and the following
- *    disclaimer in the documentation and/or other materials provided
- *    with the distribution.
- *  * Neither the name of Willow Garage, Inc. nor the names of its
- *    contributors may be used to endorse or promote prducts derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef ROS_NODE_HANDLE_H_
-#define ROS_NODE_HANDLE_H_
+#ifndef ROSCPP_NODE_HANDLE_H
+#define ROSCPP_NODE_HANDLE_H
 
-#include <stdint.h>
-
-#include "std_msgs/Time.h"
-#include "rosserial_msgs/TopicInfo.h"
-#include "rosserial_msgs/Log.h"
-#include "rosserial_msgs/RequestParam.h"
-
-#include "ros/msg.h"
-
-namespace ros
-{
-
-class NodeHandleBase_
-{
-public:
-  virtual int publish(int id, const Msg* msg) = 0;
-  virtual int spinOnce() = 0;
-  virtual bool connected() = 0;
-};
-}
-
+#include "ros/forwards.h"
 #include "ros/publisher.h"
 #include "ros/subscriber.h"
 #include "ros/service_server.h"
 #include "ros/service_client.h"
+#include "ros/timer.h"
+#include "ros/rate.h"
+#include "ros/wall_timer.h"
+#include "ros/steady_timer.h"
+#include "ros/advertise_options.h"
+#include "ros/advertise_service_options.h"
+#include "ros/subscribe_options.h"
+#include "ros/service_client_options.h"
+#include "ros/timer_options.h"
+#include "ros/wall_timer_options.h"
+#include "ros/spinner.h"
+#include "ros/init.h"
+#include "common.h"
+
+#include <boost/bind.hpp>
+
+#include <xmlrpcpp/XmlRpcValue.h>
 
 namespace ros
 {
 
-const int SPIN_OK = 0;
-const int SPIN_ERR = -1;
-const int SPIN_TIMEOUT = -2;
-
-const uint8_t SYNC_SECONDS  = 5;
-const uint8_t MODE_FIRST_FF = 0;
-/*
- * The second sync byte is a protocol version. It's value is 0xff for the first
- * version of the rosserial protocol (used up to hydro), 0xfe for the second version
- * (introduced in hydro), 0xfd for the next, and so on. Its purpose is to enable
- * detection of mismatched protocol versions (e.g. hydro rosserial_python with groovy
- * rosserial_arduino. It must be changed in both this file and in
- * rosserial_python/src/rosserial_python/SerialClient.py
- */
-const uint8_t MODE_PROTOCOL_VER   = 1;
-const uint8_t PROTOCOL_VER1       = 0xff; // through groovy
-const uint8_t PROTOCOL_VER2       = 0xfe; // in hydro
-const uint8_t PROTOCOL_VER        = PROTOCOL_VER2;
-const uint8_t MODE_SIZE_L         = 2;
-const uint8_t MODE_SIZE_H         = 3;
-const uint8_t MODE_SIZE_CHECKSUM  = 4;    // checksum for msg size received from size L and H
-const uint8_t MODE_TOPIC_L        = 5;    // waiting for topic id
-const uint8_t MODE_TOPIC_H        = 6;
-const uint8_t MODE_MESSAGE        = 7;
-const uint8_t MODE_MSG_CHECKSUM   = 8;    // checksum for msg and topic id
-
-
-const uint8_t SERIAL_MSG_TIMEOUT  = 20;   // 20 milliseconds to recieve all of message data
-
-using rosserial_msgs::TopicInfo;
-
-/* Node Handle */
-template<class Hardware,
-         int MAX_SUBSCRIBERS = 25,
-         int MAX_PUBLISHERS = 25,
-         int INPUT_SIZE = 512,
-         int OUTPUT_SIZE = 512>
-class NodeHandle_ : public NodeHandleBase_
-{
-protected:
-  Hardware hardware_{};
-
-  /* time used for syncing */
-  uint32_t rt_time{0};
-
-  /* used for computing current time */
-  uint32_t sec_offset{0}, nsec_offset{0};
-
-  /* Spinonce maximum work timeout */
-  uint32_t spin_timeout_{0};
-
-  uint8_t message_in[INPUT_SIZE] = {0};
-  uint8_t message_out[OUTPUT_SIZE] = {0};
-
-  Publisher * publishers[MAX_PUBLISHERS] = {nullptr};
-  Subscriber_ * subscribers[MAX_SUBSCRIBERS] {nullptr};
-
-  /*
-   * Setup Functions
-   */
-public:
-  Hardware* getHardware()
-  {
-    return &hardware_;
-  }
-
-  /* Start serial, initialize buffers */
-  void initNode()
-  {
-    hardware_.init();
-    mode_ = 0;
-    bytes_ = 0;
-    index_ = 0;
-    topic_ = 0;
-  };
-
-  /* Start a named port, which may be network server IP, initialize buffers */
-  void initNode(char *portName)
-  {
-    hardware_.init(portName);
-    mode_ = 0;
-    bytes_ = 0;
-    index_ = 0;
-    topic_ = 0;
-  };
+  class NodeHandleBackingCollection;
 
   /**
-   * @brief Sets the maximum time in millisconds that spinOnce() can work.
-   * This will not effect the processing of the buffer, as spinOnce processes
-   * one byte at a time. It simply sets the maximum time that one call can
-   * process for. You can choose to clear the buffer if that is beneficial if
-   * SPIN_TIMEOUT is returned from spinOnce().
-   * @param timeout The timeout in milliseconds that spinOnce will function.
+   * \brief roscpp's interface for creating subscribers, publishers, etc.
+   *
+   * This class is used for writing nodes.  It provides a RAII interface
+   * to this process' node, in that when the first NodeHandle is
+   * created, it instantiates everything necessary for this node, and
+   * when the last NodeHandle goes out of scope it shuts down the node.
+   *
+   * NodeHandle uses reference counting internally, and copying a
+   * NodeHandle is very lightweight.
+   *
+   * You must call one of the ros::init functions prior to instantiating
+   * this class.
+   *
+   * The most widely used methods are:
+   *   - Setup:
+   *    - ros::init()
+   *   - Publish / subscribe messaging:
+   *    - advertise()
+   *    - subscribe()
+   *   - RPC services:
+   *    - advertiseService()
+   *    - serviceClient()
+   *    - ros::service::call()
+   *   - Parameters:
+   *    - getParam()
+   *    - setParam()
    */
-  void setSpinTimeout(const uint32_t& timeout)
+  class ROSCPP_DECL NodeHandle
   {
-     spin_timeout_ = timeout;
-  }
+  public:
+    /**
+     * \brief Constructor
+     *
+     * When a NodeHandle is constructed, it checks to see if the global
+     * node state has already been started.  If so, it increments a
+     * global reference count.  If not, it starts the node with
+     * ros::start() and sets the reference count to 1.
+     *
+     * \param ns Namespace for this NodeHandle.  This acts in addition to any namespace assigned to this ROS node.
+     *           eg. If the node's namespace is "/a" and the namespace passed in here is "b", all 
+     *           topics/services/parameters will be prefixed with "/a/b/"
+     * \param remappings Remappings for this NodeHandle.
+     * \throws InvalidNameException if the namespace is not a valid graph resource name
+     */
+    NodeHandle(const std::string& ns = std::string(), const M_string& remappings = M_string());
+    /**
+     * \brief Copy constructor
+     *
+     * When a NodeHandle is copied, it inherits the namespace of the
+     * NodeHandle being copied, and increments the reference count of
+     * the global node state by 1.
+     */
+    NodeHandle(const NodeHandle& rhs);
+    /**
+     * \brief Parent constructor
+     *
+     * This version of the constructor takes a "parent" NodeHandle.
+     * If the passed "ns" is relative (does not start with a slash), it is equivalent to calling:
+     \verbatim
+     NodeHandle child(parent.getNamespace() + "/" + ns);
+     \endverbatim
+     *
+     * If the passed "ns" is absolute (does start with a slash), it is equivalent to calling:
+     \verbatim
+     NodeHandle child(ns);
+     \endverbatim
+     *
+     * When a NodeHandle is copied, it inherits the namespace of the
+     * NodeHandle being copied, and increments the reference count of
+     * the global node state by 1.
+     *
+     * \throws InvalidNameException if the namespace is not a valid
+     * graph resource name
+     */
+    NodeHandle(const NodeHandle& parent, const std::string& ns);
+    /**
+     * \brief Parent constructor
+     *
+     * This version of the constructor takes a "parent" NodeHandle.
+     * If the passed "ns" is relative (does not start with a slash), it is equivalent to calling:
+     \verbatim
+     NodeHandle child(parent.getNamespace() + "/" + ns, remappings);
+     \endverbatim
+     *
+     * If the passed "ns" is absolute (does start with a slash), it is equivalent to calling:
+     \verbatim
+     NodeHandle child(ns, remappings);
+     \endverbatim
+     *
+     * This version also lets you pass in name remappings that are specific to this NodeHandle
+     *
+     * When a NodeHandle is copied, it inherits the namespace of the NodeHandle being copied, 
+     * and increments the reference count of the global node state
+     * by 1.
+     * \throws InvalidNameException if the namespace is not a valid graph resource name
+     */
+    NodeHandle(const NodeHandle& parent, const std::string& ns, const M_string& remappings);
+    /**
+     * \brief Destructor
+     *
+     * When a NodeHandle is destroyed, it decrements a global reference
+     * count by 1, and if the reference count is now 0, shuts down the
+     * node.
+     */
+    ~NodeHandle();
 
-protected:
-  // State machine variables for spinOnce
-  int mode_{0};
-  int bytes_{0};
-  int topic_{0};
-  int index_{0};
-  int checksum_{0};
+    NodeHandle& operator=(const NodeHandle& rhs);
 
-  bool configured_{false};
+    /**
+     * \brief Set the default callback queue to be used by this NodeHandle.
+     *
+     * Setting this will cause any callbacks from
+     * advertisements/subscriptions/services/etc. to happen through the
+     * use of the specified queue.  NULL (the default) causes the global
+     * queue (serviced by ros::spin() and ros::spinOnce()) to be used.
+     */
+    void setCallbackQueue(CallbackQueueInterface* queue);
 
-  /* used for syncing the time */
-  uint32_t last_sync_time{0};
-  uint32_t last_sync_receive_time{0};
-  uint32_t last_msg_timeout_time{0};
-
-public:
-  /* This function goes in your loop() function, it handles
-   *  serial input and callbacks for subscribers.
-   */
-
-
-  virtual int spinOnce() override
-  {
-    /* restart if timed out */
-    uint32_t c_time = hardware_.time();
-    if ((c_time - last_sync_receive_time) > (SYNC_SECONDS * 2200))
-    {
-      configured_ = false;
+    /**
+     * \brief Returns the callback queue associated with this
+     * NodeHandle.  If none has been explicitly set, returns the global
+     * queue.
+     */
+    CallbackQueueInterface* getCallbackQueue() const 
+    { 
+      return callback_queue_ ? callback_queue_ : (CallbackQueueInterface*)getGlobalCallbackQueue(); 
     }
 
-    /* reset if message has timed out */
-    if (mode_ != MODE_FIRST_FF)
+    /**
+     * \brief Returns the namespace associated with this NodeHandle
+     */
+    const std::string& getNamespace() const { return namespace_; }
+
+    /**
+     * \brief Returns the namespace associated with this NodeHandle as
+     * it was passed in (before it was resolved)
+     */
+    const std::string& getUnresolvedNamespace() const { return unresolved_namespace_; }
+
+    /** \brief Resolves a name into a fully-qualified name
+     *
+     * Resolves a name into a fully qualified name, eg. "blah" =>
+     * "/namespace/blah". By default also applies any matching
+     * name-remapping rules (which were usually supplied on the command
+     * line at startup) to the given name, returning the resulting
+     * remapped name.
+     *
+     * \param name Name to remap
+     *
+     * \param remap Whether to apply name-remapping rules
+     *
+     * \return Resolved name.
+     *
+     * \throws InvalidNameException If the name begins with a tilde, or is an otherwise invalid graph resource name
+     */
+    std::string resolveName(const std::string& name, bool remap = true) const;
+
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Versions of advertise()
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /**
+     * \brief Advertise a topic, simple version
+     *
+     * This call connects to the master to publicize that the node will be
+     * publishing messages on the given topic.  This method returns a Publisher that allows you to
+     * publish a message on this topic.
+     *
+     * This version of advertise is a templated convenience function, and can be used like so
+     *
+     *   ros::Publisher pub = handle.advertise<std_msgs::Empty>("my_topic", 1);
+     *
+     * \param topic Topic to advertise on
+     *
+     * \param queue_size Maximum number of outgoing messages to be
+     * queued for delivery to subscribers
+     *
+     * \param latch (optional) If true, the last message published on
+     * this topic will be saved and sent to new subscribers when they
+     * connect
+     *
+     * \return On success, a Publisher that, when it goes out of scope,
+     * will automatically release a reference on this advertisement.  On
+     * failure, an empty Publisher.
+     *
+     * \throws InvalidNameException If the topic name begins with a
+     * tilde, or is an otherwise invalid graph resource name, or is an
+     * otherwise invalid graph resource name
+     */
+    template <class M>
+    Publisher advertise(const std::string& topic, uint32_t queue_size, bool latch = false)
     {
-      if (c_time > last_msg_timeout_time)
-      {
-        mode_ = MODE_FIRST_FF;
-      }
+      AdvertiseOptions ops;
+      ops.template init<M>(topic, queue_size);
+      ops.latch = latch;
+      return advertise(ops);
     }
 
-    /* while available buffer, read data */
-    while (true)
-    {
-      // If a timeout has been specified, check how long spinOnce has been running.
-      if (spin_timeout_ > 0)
-      {
-        // If the maximum processing timeout has been exceeded, exit with error.
-        // The next spinOnce can continue where it left off, or optionally
-        // based on the application in use, the hardware buffer could be flushed
-        // and start fresh.
-        if ((hardware_.time() - c_time) > spin_timeout_)
-        {
-          // Exit the spin, processing timeout exceeded.
-          return SPIN_TIMEOUT;
-        }
-      }
-      int data = hardware_.read();
-      if (data < 0)
-        break;
-      checksum_ += data;
-      if (mode_ == MODE_MESSAGE)          /* message data being recieved */
-      {
-        message_in[index_++] = data;
-        bytes_--;
-        if (bytes_ == 0)                 /* is message complete? if so, checksum */
-          mode_ = MODE_MSG_CHECKSUM;
-      }
-      else if (mode_ == MODE_FIRST_FF)
-      {
-        if (data == 0xff)
-        {
-          mode_++;
-          last_msg_timeout_time = c_time + SERIAL_MSG_TIMEOUT;
-        }
-        else if (hardware_.time() - c_time > (SYNC_SECONDS * 1000))
-        {
-          /* We have been stuck in spinOnce too long, return error */
-          configured_ = false;
-          return SPIN_TIMEOUT;
-        }
-      }
-      else if (mode_ == MODE_PROTOCOL_VER)
-      {
-        if (data == PROTOCOL_VER)
-        {
-          mode_++;
-        }
-        else
-        {
-          mode_ = MODE_FIRST_FF;
-          if (configured_ == false)
-            requestSyncTime();  /* send a msg back showing our protocol version */
-        }
-      }
-      else if (mode_ == MODE_SIZE_L)      /* bottom half of message size */
-      {
-        bytes_ = data;
-        index_ = 0;
-        mode_++;
-        checksum_ = data;               /* first byte for calculating size checksum */
-      }
-      else if (mode_ == MODE_SIZE_H)      /* top half of message size */
-      {
-        bytes_ += data << 8;
-        mode_++;
-      }
-      else if (mode_ == MODE_SIZE_CHECKSUM)
-      {
-        if ((checksum_ % 256) == 255)
-          mode_++;
-        else
-          mode_ = MODE_FIRST_FF;          /* Abandon the frame if the msg len is wrong */
-      }
-      else if (mode_ == MODE_TOPIC_L)     /* bottom half of topic id */
-      {
-        topic_ = data;
-        mode_++;
-        checksum_ = data;               /* first byte included in checksum */
-      }
-      else if (mode_ == MODE_TOPIC_H)     /* top half of topic id */
-      {
-        topic_ += data << 8;
-        mode_ = MODE_MESSAGE;
-        if (bytes_ == 0)
-          mode_ = MODE_MSG_CHECKSUM;
-      }
-      else if (mode_ == MODE_MSG_CHECKSUM)    /* do checksum */
-      {
-        mode_ = MODE_FIRST_FF;
-        if ((checksum_ % 256) == 255)
-        {
-          if (topic_ == TopicInfo::ID_PUBLISHER)
-          {
-            requestSyncTime();
-            negotiateTopics();
-            last_sync_time = c_time;
-            last_sync_receive_time = c_time;
-            return SPIN_ERR;
-          }
-          else if (topic_ == TopicInfo::ID_TIME)
-          {
-            syncTime(message_in);
-          }
-          else if (topic_ == TopicInfo::ID_PARAMETER_REQUEST)
-          {
-            req_param_resp.deserialize(message_in);
-            param_received = true;
-          }
-          else if (topic_ == TopicInfo::ID_TX_STOP)
-          {
-            configured_ = false;
-          }
-          else
-          {
-            if (subscribers[topic_ - 100])
-              subscribers[topic_ - 100]->callback(message_in);
-          }
-        }
-      }
-    }
+    /**
+     * \brief Advertise a topic, with most of the available options, including subscriber status callbacks
+     *
+     * This call connects to the master to publicize that the node will be
+     * publishing messages on the given topic.  This method returns a Publisher that allows you to
+     * publish a message on this topic.
+     *
+     * This version of advertise allows you to pass functions to be called when new subscribers connect and
+     * disconnect.  With bare functions it can be used like so:
+     \verbatim
+     void connectCallback(const ros::SingleSubscriberPublisher& pub)
+     {
+     // Do something
+     }
 
-    /* occasionally sync time */
-    if (configured_ && ((c_time - last_sync_time) > (SYNC_SECONDS * 500)))
-    {
-      requestSyncTime();
-      last_sync_time = c_time;
-    }
+     handle.advertise<std_msgs::Empty>("my_topic", 1, (ros::SubscriberStatusCallback)connectCallback);
+     \endverbatim
+     *
+     * With class member functions it can be used with boost::bind:
+     \verbatim
+     void MyClass::connectCallback(const ros::SingleSubscriberPublisher& pub)
+     {
+     // Do something
+     }
 
-    return SPIN_OK;
-  }
-
-
-  /* Are we connected to the PC? */
-  virtual bool connected() override
-  {
-    return configured_;
-  };
-
-  /********************************************************************
-   * Time functions
+     MyClass my_class;
+     ros::Publisher pub = handle.advertise<std_msgs::Empty>("my_topic", 1, 
+                                                            boost::bind(&MyClass::connectCallback, my_class, boost::placeholders::_1));
+     \endverbatim
+     *
+   *
+   * \param topic Topic to advertise on
+   *
+   * \param queue_size Maximum number of outgoing messages to be queued for delivery to subscribers
+   *
+   * \param connect_cb Function to call when a subscriber connects
+   *
+   * \param disconnect_cb (optional) Function to call when a subscriber disconnects
+     *
+   * \param tracked_object (optional) A shared pointer to an object to track for these callbacks.  If set, the a weak_ptr will be created to this object,
+   * and if the reference count goes to 0 the subscriber callbacks will not get called.
+   * Note that setting this will cause a new reference to be added to the object before the
+   * callback, and for it to go out of scope (and potentially be deleted) in the code path (and therefore
+   * thread) that the callback is invoked from.
+   * \param latch (optional) If true, the last message published on this topic will be saved and sent to new subscribers when they connect
+   * \return On success, a Publisher that, when it goes out of scope, will automatically release a reference
+   * on this advertisement.  On failure, an empty Publisher which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+ros::publisher pub = nodeHandle.advertise<std_msgs::Empty>("my_topic", 1, (ros::SubscriberStatusCallback)callback);
+if (pub)  // Enter if publisher is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
    */
-
-  void requestSyncTime()
+  template <class M>
+  Publisher advertise(const std::string& topic, uint32_t queue_size,
+                            const SubscriberStatusCallback& connect_cb,
+                            const SubscriberStatusCallback& disconnect_cb = SubscriberStatusCallback(),
+                            const VoidConstPtr& tracked_object = VoidConstPtr(),
+                            bool latch = false)
   {
-    std_msgs::Time t;
-    publish(TopicInfo::ID_TIME, &t);
-    rt_time = hardware_.time();
+    AdvertiseOptions ops;
+    ops.template init<M>(topic, queue_size, connect_cb, disconnect_cb);
+    ops.tracked_object = tracked_object;
+    ops.latch = latch;
+    return advertise(ops);
   }
 
-  void syncTime(uint8_t * data)
-  {
-    std_msgs::Time t;
-    uint32_t offset = hardware_.time() - rt_time;
-
-    t.deserialize(data);
-    t.data.sec += offset / 1000;
-    t.data.nsec += (offset % 1000) * 1000000UL;
-
-    this->setNow(t.data);
-    last_sync_receive_time = hardware_.time();
-  }
-
-  Time now()
-  {
-    uint32_t ms = hardware_.time();
-    Time current_time;
-    current_time.sec = ms / 1000 + sec_offset;
-    current_time.nsec = (ms % 1000) * 1000000UL + nsec_offset;
-    normalizeSecNSec(current_time.sec, current_time.nsec);
-    return current_time;
-  }
-
-  void setNow(const Time & new_now)
-  {
-    uint32_t ms = hardware_.time();
-    sec_offset = new_now.sec - ms / 1000 - 1;
-    nsec_offset = new_now.nsec - (ms % 1000) * 1000000UL + 1000000000UL;
-    normalizeSecNSec(sec_offset, nsec_offset);
-  }
-
-  /********************************************************************
-   * Topic Management
+  /**
+   * \brief Advertise a topic, with full range of AdvertiseOptions
+   *
+   * This call connects to the master to publicize that the node will be
+   * publishing messages on the given topic.  This method returns a Publisher that allows you to
+   * publish a message on this topic.
+   *
+   * This is an advanced version advertise() that exposes all options (through the AdvertiseOptions structure)
+   *
+   * \param ops Advertise options to use
+   * \return On success, a Publisher that, when it goes out of scope, will automatically release a reference
+   * on this advertisement.  On failure, an empty Publisher which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+ros::AdvertiseOptions ops;
+...
+ros::publisher pub = nodeHandle.advertise(ops);
+if (pub)  // Enter if publisher is valid
+{
+...
+}
+\endverbatim
+   *
+   * \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
    */
+  Publisher advertise(AdvertiseOptions& ops);
 
-  /* Register a new publisher */
-  bool advertise(Publisher & p)
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of subscribe()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  /**
+   * \brief Subscribe to a topic, version for class member function with bare pointer
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using member functions, and can be used like so:
+\verbatim
+void Foo::callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+Foo foo_object;
+ros::Subscriber sub = handle.subscribe("my_topic", 1, &Foo::callback, &foo_object);
+\endverbatim
+   *
+   * \param M [template] M here is the callback parameter type (e.g. const boost::shared_ptr<M const>& or const M&), \b not the message type, and should almost always be deduced
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Member function pointer to call when a message has arrived
+   * \param obj Object to call fp on
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+void Foo::callback(const std_msgs::Empty::ConstPtr& message) {}
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(T::*fp)(M), T* obj, 
+                       const TransportHints& transport_hints = TransportHints())
   {
-    for (int i = 0; i < MAX_PUBLISHERS; i++)
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<M>(topic, queue_size, boost::bind(fp, obj, boost::placeholders::_1));
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /// and the const version
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(T::*fp)(M) const, T* obj, 
+                       const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<M>(topic, queue_size, boost::bind(fp, obj, boost::placeholders::_1));
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for class member function with bare pointer
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using member functions, and can be used like so:
+\verbatim
+void Foo::callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+Foo foo_object;
+ros::Subscriber sub = handle.subscribe("my_topic", 1, &Foo::callback, &foo_object);
+\endverbatim
+   *
+   * \param M [template] M here is the message type
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Member function pointer to call when a message has arrived
+   * \param obj Object to call fp on
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+void Foo::callback(const std_msgs::Empty::ConstPtr& message) {}
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, 
+                       void(T::*fp)(const boost::shared_ptr<M const>&), T* obj, 
+                       const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, boost::bind(fp, obj, boost::placeholders::_1));
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, 
+                       void(T::*fp)(const boost::shared_ptr<M const>&) const, T* obj, 
+                       const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, boost::bind(fp, obj, boost::placeholders::_1));
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for class member function with shared_ptr
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using member functions on a shared_ptr:
+\verbatim
+void Foo::callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = handle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+\endverbatim
+   *
+   * \param M [template] M here is the callback parameter type (e.g. const boost::shared_ptr<M const>& or const M&), \b not the message type, and should almost always be deduced
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Member function pointer to call when a message has arrived
+   * \param obj Object to call fp on.  Since this is a shared pointer, the object will automatically be tracked with a weak_ptr
+   * so that if it is deleted before the Subscriber goes out of scope the callback will no longer be called (and therefore will not crash).
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+void Foo::callback(const std_msgs::Empty::ConstPtr& message) {}
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(T::*fp)(M), 
+                       const boost::shared_ptr<T>& obj, const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<M>(topic, queue_size, boost::bind(fp, obj.get(), boost::placeholders::_1));
+    ops.tracked_object = obj;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(T::*fp)(M) const, 
+                       const boost::shared_ptr<T>& obj, const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<M>(topic, queue_size, boost::bind(fp, obj.get(), boost::placeholders::_1));
+    ops.tracked_object = obj;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for class member function with shared_ptr
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using member functions on a shared_ptr:
+\verbatim
+void Foo::callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = handle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+\endverbatim
+   *
+   * \param M [template] M here is the message type
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Member function pointer to call when a message has arrived
+   * \param obj Object to call fp on.  Since this is a shared pointer, the object will automatically be tracked with a weak_ptr
+   * so that if it is deleted before the Subscriber goes out of scope the callback will no longer be called (and therefore will not crash).
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+ros::NodeHandle nodeHandle;
+void Foo::callback(const std_msgs::Empty::ConstPtr& message) {}
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, &Foo::callback, foo_object);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, 
+                       void(T::*fp)(const boost::shared_ptr<M const>&), 
+                       const boost::shared_ptr<T>& obj, const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, boost::bind(fp, obj.get(), boost::placeholders::_1));
+    ops.tracked_object = obj;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+  template<class M, class T>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, 
+                       void(T::*fp)(const boost::shared_ptr<M const>&) const, 
+                       const boost::shared_ptr<T>& obj, const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, boost::bind(fp, obj.get(), boost::placeholders::_1));
+    ops.tracked_object = obj;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for bare function
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using bare functions, and can be used like so:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+ros::Subscriber sub = handle.subscribe("my_topic", 1, callback);
+\endverbatim
+   *
+   * \param M [template] M here is the callback parameter type (e.g. const boost::shared_ptr<M const>& or const M&), \b not the message type, and should almost always be deduced
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Function pointer to call when a message has arrived
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message){...}
+ros::NodeHandle nodeHandle;
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, callback);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(*fp)(M), const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<M>(topic, queue_size, fp);
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for bare function
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe is a convenience function for using bare functions, and can be used like so:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message)
+{
+}
+
+ros::Subscriber sub = handle.subscribe("my_topic", 1, callback);
+\endverbatim
+   *
+   * \param M [template] M here is the message type
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param fp Function pointer to call when a message has arrived
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message){...}
+ros::NodeHandle nodeHandle;
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, callback);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, void(*fp)(const boost::shared_ptr<M const>&), const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, fp);
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for arbitrary boost::function object
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, callback is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe allows anything bindable to a boost::function object
+   *
+   * \param M [template] M here is the message type
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param callback Callback to call when a message has arrived
+   * \param tracked_object A shared pointer to an object to track for these callbacks.  If set, the a weak_ptr will be created to this object,
+   * and if the reference count goes to 0 the subscriber callbacks will not get called.
+   * Note that setting this will cause a new reference to be added to the object before the
+   * callback, and for it to go out of scope (and potentially be deleted) in the code path (and therefore
+   * thread) that the callback is invoked from.
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message){...}
+ros::NodeHandle nodeHandle;
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, callback);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, const boost::function<void (const boost::shared_ptr<M const>&)>& callback,
+                             const VoidConstPtr& tracked_object = VoidConstPtr(), const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template init<M>(topic, queue_size, callback);
+    ops.tracked_object = tracked_object;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version for arbitrary boost::function object
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, callback is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe allows anything bindable to a boost::function object
+   *
+   * \param M [template] the message type
+   * \param C [template] the callback parameter type (e.g. const boost::shared_ptr<M const>& or const M&)
+   * \param topic Topic to subscribe to
+   * \param queue_size Number of incoming messages to queue up for
+   * processing (messages in excess of this queue capacity will be
+   * discarded).
+   * \param callback Callback to call when a message has arrived
+   * \param tracked_object A shared pointer to an object to track for these callbacks.  If set, the a weak_ptr will be created to this object,
+   * and if the reference count goes to 0 the subscriber callbacks will not get called.
+   * Note that setting this will cause a new reference to be added to the object before the
+   * callback, and for it to go out of scope (and potentially be deleted) in the code path (and therefore
+   * thread) that the callback is invoked from.
+   * \param transport_hints a TransportHints structure which defines various transport-related options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+void callback(const std_msgs::Empty::ConstPtr& message){...}
+ros::NodeHandle nodeHandle;
+ros::Subscriber sub = nodeHandle.subscribe("my_topic", 1, callback);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  template<class M, class C>
+  Subscriber subscribe(const std::string& topic, uint32_t queue_size, const boost::function<void (C)>& callback,
+                             const VoidConstPtr& tracked_object = VoidConstPtr(), const TransportHints& transport_hints = TransportHints())
+  {
+    SubscribeOptions ops;
+    ops.template initByFullCallbackType<C>(topic, queue_size, callback);
+    ops.tracked_object = tracked_object;
+    ops.transport_hints = transport_hints;
+    return subscribe(ops);
+  }
+
+  /**
+   * \brief Subscribe to a topic, version with full range of SubscribeOptions
+   *
+   * This method connects to the master to register interest in a given
+   * topic.  The node will automatically be connected with publishers on
+   * this topic.  On each message receipt, fp is invoked and passed a shared pointer
+   * to the message received.  This message should \b not be changed in place, as it
+   * is shared with any other subscriptions to this topic.
+   *
+   * This version of subscribe allows the full range of options, exposed through the SubscribeOptions class
+   *
+   * \param ops Subscribe options
+   * \return On success, a Subscriber that, when all copies of it go out of scope, will unsubscribe from this topic.
+   * On failure, an empty Subscriber which can be checked with:
+\verbatim
+SubscribeOptions ops;
+...
+ros::NodeHandle nodeHandle;
+ros::Subscriber sub = nodeHandle.subscribe(ops);
+if (sub)  // Enter if subscriber is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the topic name begins with a tilde, or is an otherwise invalid graph resource name
+   *  \throws ConflictingSubscriptionException If this node is already subscribed to the same topic with a different datatype
+   */
+  Subscriber subscribe(SubscribeOptions& ops);
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of advertiseService()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  /**
+   * \brief Advertise a service, version for class member function with bare pointer
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using member functions, and can be used like so:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+
+Foo foo_object;
+ros::ServiceServer service = handle.advertiseService("my_service", &Foo::callback, &foo_object);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func Member function pointer to call when a message has arrived
+   * \param obj Object to call srv_func on
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", &Foo::callback, &foo_object);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name, or is an otherwise invalid graph resource name
+   */
+  template<class T, class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(T::*srv_func)(MReq &, MRes &), T *obj)
+  {
+    AdvertiseServiceOptions ops;
+    ops.template init<MReq, MRes>(service, boost::bind(srv_func, obj, boost::placeholders::_1, boost::placeholders::_2));
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for class member function with bare pointer using ros::ServiceEvent as the callback parameter type
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using member functions, and can be used like so:
+\verbatim
+bool Foo::callback(ros::ServiceEvent<std_srvs::Empty::Request, std_srvs::Empty::Response>& event)
+{
+  return true;
+}
+
+Foo foo_object;
+ros::ServiceServer service = handle.advertiseService("my_service", &Foo::callback, &foo_object);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func Member function pointer to call when a message has arrived
+   * \param obj Object to call srv_func on
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", &Foo::callback, &foo_object);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   *  \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name, or is an otherwise invalid graph resource name
+   */
+  template<class T, class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(T::*srv_func)(ServiceEvent<MReq, MRes>&), T *obj)
+  {
+    AdvertiseServiceOptions ops;
+    ops.template initBySpecType<ServiceEvent<MReq, MRes> >(service, boost::bind(srv_func, obj, boost::placeholders::_1));
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for class member function with shared_ptr
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using member functions on shared pointers, and can be used like so:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::ServiceServer service = handle.advertiseService("my_service", &Foo::callback, foo_object);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func Member function pointer to call when a message has arrived
+   * \param obj Object to call srv_func on.  Since this is a shared_ptr, it will automatically be tracked with a weak_ptr,
+   * and if the object is deleted the service callback will stop being called (and therefore will not crash).
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", &Foo::callback, &foo_object);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class T, class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(T::*srv_func)(MReq &, MRes &), const boost::shared_ptr<T>& obj)
+  {
+    AdvertiseServiceOptions ops;
+    ops.template init<MReq, MRes>(service, boost::bind(srv_func, obj.get(), boost::placeholders::_1, boost::placeholders::_2));
+    ops.tracked_object = obj;
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for class member function with shared_ptr using ros::ServiceEvent as the callback parameter type
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using member functions on shared pointers, and can be used like so:
+\verbatim
+bool Foo::callback(ros::ServiceEvent<std_srvs::Empty, std_srvs::Empty>& event)
+{
+  return true;
+}
+
+boost::shared_ptr<Foo> foo_object(boost::make_shared<Foo>());
+ros::ServiceServer service = handle.advertiseService("my_service", &Foo::callback, foo_object);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func Member function pointer to call when a message has arrived
+   * \param obj Object to call srv_func on.  Since this is a shared_ptr, it will automatically be tracked with a weak_ptr,
+   * and if the object is deleted the service callback will stop being called (and therefore will not crash).
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", &Foo::callback, &foo_object);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class T, class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(T::*srv_func)(ServiceEvent<MReq, MRes>&), const boost::shared_ptr<T>& obj)
+  {
+    AdvertiseServiceOptions ops;
+    ops.template initBySpecType<ServiceEvent<MReq, MRes> >(service, boost::bind(srv_func, obj.get(), boost::placeholders::_1));
+    ops.tracked_object = obj;
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for bare function
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using bare functions, and can be used like so:
+\verbatim
+bool callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+
+ros::ServiceServer service = handle.advertiseService("my_service", callback);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func function pointer to call when a message has arrived
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", callback);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(*srv_func)(MReq&, MRes&))
+  {
+    AdvertiseServiceOptions ops;
+    ops.template init<MReq, MRes>(service, srv_func);
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for bare function using ros::ServiceEvent as the callback parameter type
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This is a convenience function for using bare functions, and can be used like so:
+\verbatim
+bool callback(ros::ServiceEvent<std_srvs::Empty, std_srvs::Empty>& event)
+{
+  return true;
+}
+
+ros::ServiceServer service = handle.advertiseService("my_service", callback);
+\endverbatim
+   *
+   * \param service Service name to advertise on
+   * \param srv_func function pointer to call when a message has arrived
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", callback);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, bool(*srv_func)(ServiceEvent<MReq, MRes>&))
+  {
+    AdvertiseServiceOptions ops;
+    ops.template initBySpecType<ServiceEvent<MReq, MRes> >(service, srv_func);
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for arbitrary boost::function object
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This version of advertiseService allows non-class functions, as well as functor objects and boost::bind (along with anything
+   * else boost::function supports).
+   *
+   * \param service Service name to advertise on
+   * \param callback Callback to call when the service is called
+   * \param tracked_object A shared pointer to an object to track for these callbacks.  If set, the a weak_ptr will be created to this object,
+   * and if the reference count goes to 0 the subscriber callbacks will not get called.
+   * Note that setting this will cause a new reference to be added to the object before the
+   * callback, and for it to go out of scope (and potentially be deleted) in the code path (and therefore
+   * thread) that the callback is invoked from.
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", callback);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class MReq, class MRes>
+  ServiceServer advertiseService(const std::string& service, const boost::function<bool(MReq&, MRes&)>& callback, 
+                                 const VoidConstPtr& tracked_object = VoidConstPtr())
+  {
+    AdvertiseServiceOptions ops;
+    ops.template init<MReq, MRes>(service, callback);
+    ops.tracked_object = tracked_object;
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, version for arbitrary boost::function object using ros::ServiceEvent as the callback parameter type
+   *
+   * Note that the template parameter S is the full event type, e.g. ros::ServiceEvent<Req, Res>
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This version of advertiseService allows non-class functions, as well as functor objects and boost::bind (along with anything
+   * else boost::function supports).
+   *
+   * \param service Service name to advertise on
+   * \param callback Callback to call when the service is called
+   * \param tracked_object A shared pointer to an object to track for these callbacks.  If set, the a weak_ptr will be created to this object,
+   * and if the reference count goes to 0 the subscriber callbacks will not get called.
+   * Note that setting this will cause a new reference to be added to the object before the
+   * callback, and for it to go out of scope (and potentially be deleted) in the code path (and therefore
+   * thread) that the callback is invoked from.
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+bool Foo::callback(std_srvs::Empty& request, std_srvs::Empty& response)
+{
+  return true;
+}
+ros::NodeHandle nodeHandle;
+Foo foo_object;
+ros::ServiceServer service = nodeHandle.advertiseService("my_service", callback);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class S>
+  ServiceServer advertiseService(const std::string& service, const boost::function<bool(S&)>& callback, 
+                                 const VoidConstPtr& tracked_object = VoidConstPtr())
+  {
+    AdvertiseServiceOptions ops;
+    ops.template initBySpecType<S>(service, callback);
+    ops.tracked_object = tracked_object;
+    return advertiseService(ops);
+  }
+
+  /**
+   * \brief Advertise a service, with full range of AdvertiseServiceOptions
+   *
+   * This call connects to the master to publicize that the node will be
+   * offering an RPC service with the given name.
+   *
+   * This version of advertiseService allows the full set of options, exposed through the AdvertiseServiceOptions class
+   *
+   * \param ops Advertise options
+   * \return On success, a ServiceServer that, when all copies of it go out of scope, will unadvertise this service.
+   * On failure, an empty ServiceServer which can be checked with:
+\verbatim
+AdvertiseServiceOptions ops;
+...
+ros::NodeHandle nodeHandle;
+ros::ServiceServer service = nodeHandle.advertiseService(ops);
+if (service)  // Enter if advertised service is valid
+{
+...
+}
+\endverbatim
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  ServiceServer advertiseService(AdvertiseServiceOptions& ops);
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of serviceClient()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  /** @brief Create a client for a service, version templated on two message types
+   *
+   * When the last handle reference of a persistent connection is cleared, the connection will automatically close.
+   *
+   * @param service_name The name of the service to connect to
+   * @param persistent Whether this connection should persist.  Persistent services keep the connection to the remote host active
+   *        so that subsequent calls will happen faster.  In general persistent services are discouraged, as they are not as
+   *        robust to node failure as non-persistent services.
+   * @param header_values Key/value pairs you'd like to send along in the connection handshake
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class MReq, class MRes>
+  ServiceClient serviceClient(const std::string& service_name, bool persistent = false, 
+                              const M_string& header_values = M_string())
+  {
+    ServiceClientOptions ops;
+    ops.template init<MReq, MRes>(service_name, persistent, header_values);
+    return serviceClient(ops);
+  }
+
+  /** @brief Create a client for a service, version templated on service type
+   *
+   * When the last handle reference of a persistent connection is cleared, the connection will automatically close.
+   *
+   * @param service_name The name of the service to connect to
+   * @param persistent Whether this connection should persist.  Persistent services keep the connection to the remote host active
+   *        so that subsequent calls will happen faster.  In general persistent services are discouraged, as they are not as
+   *        robust to node failure as non-persistent services.
+   * @param header_values Key/value pairs you'd like to send along in the connection handshake
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<class Service>
+  ServiceClient serviceClient(const std::string& service_name, bool persistent = false, 
+                              const M_string& header_values = M_string())
+  {
+    ServiceClientOptions ops;
+    ops.template init<Service>(service_name, persistent, header_values);
+    return serviceClient(ops);
+  }
+
+  /** @brief Create a client for a service, version with full range of ServiceClientOptions
+   *
+   * When the last handle reference of a persistent connection is cleared, the connection will automatically close.
+   *
+   * @param ops The options for this service client
+   * \throws InvalidNameException If the service name begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  ServiceClient serviceClient(ServiceClientOptions& ops);
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of createTimer()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant takes
+   * a class member function, and a bare pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param r The rate at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class Handler, class Obj>
+  Timer createTimer(Rate r, Handler h, Obj o, bool oneshot = false, bool autostart = true) const
+  {
+    return createTimer(r.expectedCycleTime(), h, o, oneshot, autostart);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant takes
+   * a class member function, and a bare pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class T>
+  Timer createTimer(Duration period, void(T::*callback)(const TimerEvent&) const, T* obj, 
+                    bool oneshot = false, bool autostart = true) const
+  {
+    return createTimer(period, boost::bind(callback, obj, boost::placeholders::_1), oneshot, autostart);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant takes
+   * a class member function, and a bare pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class T>
+  Timer createTimer(Duration period, void(T::*callback)(const TimerEvent&), T* obj, 
+                    bool oneshot = false, bool autostart = true) const
+  {
+    return createTimer(period, boost::bind(callback, obj, boost::placeholders::_1), oneshot, autostart);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant takes
+   * a class member function, and a shared pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on.  Since this is a shared pointer, the object will
+   * automatically be tracked with a weak_ptr so that if it is deleted before the Timer goes out of
+   * scope the callback will no longer be called (and therefore will not crash).
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class T>
+  Timer createTimer(Duration period, void(T::*callback)(const TimerEvent&), const boost::shared_ptr<T>& obj, 
+                    bool oneshot = false, bool autostart = true) const
+  {
+    TimerOptions ops(period, boost::bind(callback, obj.get(), boost::placeholders::_1), 0);
+    ops.tracked_object = obj;
+    ops.oneshot = oneshot;
+    ops.autostart = autostart;
+    return createTimer(ops);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant takes
+   * anything that can be bound to a Boost.Function, including a bare function
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The function to call
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  Timer createTimer(Duration period, const TimerCallback& callback, bool oneshot = false,
+                    bool autostart = true) const;
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate.  This variant allows
+   * the full range of TimerOptions.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param ops The options to use when creating the timer
+   */
+  Timer createTimer(TimerOptions& ops) const;
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of createWallTimer()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.
+   * This variant takes a class member function, and a bare pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class T>
+  WallTimer createWallTimer(WallDuration period, void(T::*callback)(const WallTimerEvent&), T* obj, 
+                            bool oneshot = false, bool autostart = true) const
+  {
+    return createWallTimer(period, boost::bind(callback, obj, boost::placeholders::_1), oneshot, autostart);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant takes
+   * a class member function, and a shared pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on.  Since this is a shared pointer, the object will
+   * automatically be tracked with a weak_ptr so that if it is deleted before the Timer goes out of
+   * scope the callback will no longer be called (and therefore will not crash).
+   * \param oneshot If true, this timer will only fire once
+   */
+  template<class T>
+  WallTimer createWallTimer(WallDuration period, void(T::*callback)(const WallTimerEvent&), 
+                            const boost::shared_ptr<T>& obj, 
+                            bool oneshot = false, bool autostart = true) const
+  {
+    WallTimerOptions ops(period, boost::bind(callback, obj.get(), boost::placeholders::_1), 0);
+    ops.tracked_object = obj;
+    ops.oneshot = oneshot;
+    ops.autostart = autostart;
+    return createWallTimer(ops);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant takes
+   * anything that can be bound to a Boost.Function, including a bare function
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The function to call
+   * \param oneshot If true, this timer will only fire once
+   */
+  WallTimer createWallTimer(WallDuration period, const WallTimerCallback& callback, 
+                            bool oneshot = false, bool autostart = true) const;
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant allows
+   * the full range of TimerOptions.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param ops The options to use when creating the timer
+   */
+  WallTimer createWallTimer(WallTimerOptions& ops) const;
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Versions of createSteadyTimer()
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.
+   * This variant takes a class member function, and a bare pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on
+   * \param oneshot If true, this timer will only fire once
+   * \param autostart If true (default), return timer that is already started
+   */
+  template<class T>
+  SteadyTimer createSteadyTimer(WallDuration period, void(T::*callback)(const SteadyTimerEvent&), T* obj,
+                                bool oneshot = false, bool autostart = true) const
+  {
+    return createSteadyTimer(period, boost::bind(callback, obj, boost::placeholders::_1), oneshot, autostart);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant takes
+   * a class member function, and a shared pointer to the object to call the method on.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The method to call
+   * \param obj The object to call the method on.  Since this is a shared pointer, the object will
+   * automatically be tracked with a weak_ptr so that if it is deleted before the Timer goes out of
+   * scope the callback will no longer be called (and therefore will not crash).
+   * \param oneshot If true, this timer will only fire once
+   */
+  template<class T>
+  SteadyTimer createSteadyTimer(WallDuration period, void(T::*callback)(const SteadyTimerEvent&),
+                                const boost::shared_ptr<T>& obj,
+                                bool oneshot = false, bool autostart = true) const
+  {
+    SteadyTimerOptions ops(period, boost::bind(callback, obj.get(), boost::placeholders::_1), 0);
+    ops.tracked_object = obj;
+    ops.oneshot = oneshot;
+    ops.autostart = autostart;
+    return createSteadyTimer(ops);
+  }
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant takes
+   * anything that can be bound to a Boost.Function, including a bare function
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param period The period at which to call the callback
+   * \param callback The function to call
+   * \param oneshot If true, this timer will only fire once
+   */
+  SteadyTimer createSteadyTimer(WallDuration period, const SteadyTimerCallback& callback,
+                                bool oneshot = false, bool autostart = true) const;
+
+  /**
+   * \brief Create a timer which will call a callback at the specified rate, using wall time to determine
+   * when to call the callback instead of ROS time.  This variant allows
+   * the full range of TimerOptions.
+   *
+   * When the Timer (and all copies of it) returned goes out of scope, the timer will automatically
+   * be stopped, and the callback will no longer be called.
+   *
+   * \param ops The options to use when creating the timer
+   */
+  SteadyTimer createSteadyTimer(SteadyTimerOptions& ops) const;
+
+  /** \brief Set an arbitrary XML/RPC value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param v The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const XmlRpc::XmlRpcValue& v) const;
+  /** \brief Set a string value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param s The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::string& s) const;
+  /** \brief Set a string value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param s The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const char* s) const;
+  /** \brief Set a double value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param d The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, double d) const;
+  /** \brief Set an integer value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param i The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, int i) const;
+  /** \brief Set a boolean value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param b The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, bool b) const;
+
+  /** \brief Set a string vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param vec The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::vector<std::string>& vec) const;
+  /** \brief Set a double vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param vec The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::vector<double>& vec) const;
+  /** \brief Set a float vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param vec The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::vector<float>& vec) const;
+  /** \brief Set a int vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param vec The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::vector<int>& vec) const;
+  /** \brief Set a bool vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param vec The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::vector<bool>& vec) const;
+
+  /** \brief Set a string vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param map The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::map<std::string, std::string>& map) const;
+  /** \brief Set a double vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param map The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::map<std::string, double>& map) const;
+  /** \brief Set a float vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param map The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::map<std::string, float>& map) const;
+  /** \brief Set a int vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param map The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::map<std::string, int>& map) const;
+  /** \brief Set a bool vector value on the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param map The value to be inserted.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  void setParam(const std::string& key, const std::map<std::string, bool>& map) const;
+
+  /** \brief Get a string value from the parameter server.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] s Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::string& s) const;
+  /** \brief Get a double value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] d Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, double& d) const;
+  /** \brief Get a float value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] f Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, float& f) const;
+  /** \brief Get an integer value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] i Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, int& i) const;
+  /** \brief Get a boolean value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] b Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, bool& b) const;
+  /** \brief Get an arbitrary XML/RPC value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] v Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, XmlRpc::XmlRpcValue& v) const;
+
+  /** \brief Get a string vector value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::vector<std::string>& vec) const;
+  /** \brief Get a double vector value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::vector<double>& vec) const;
+  /** \brief Get a float vector value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::vector<float>& vec) const;
+  /** \brief Get an int vector value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::vector<int>& vec) const;
+  /** \brief Get a boolean vector value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::vector<bool>& vec) const;
+
+  /** \brief Get a string map value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::map<std::string, std::string>& map) const;
+  /** \brief Get a double map value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::map<std::string, double>& map) const;
+  /** \brief Get a float map value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::map<std::string, float>& map) const;
+  /** \brief Get an int map value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::map<std::string, int>& map) const;
+  /** \brief Get a boolean map value from the parameter server.
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParam(const std::string& key, std::map<std::string, bool>& map) const;
+
+  /** \brief Get a string value from the parameter server, with local caching
+   *
+   * If you want to provide a default value in case the key does not exist use param().
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] s Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::string& s) const;
+  /** \brief Get a double value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] d Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, double& d) const;
+  /** \brief Get a float value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] f Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, float& f) const;
+  /** \brief Get an integer value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] i Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, int& i) const;
+  /** \brief Get a boolean value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] b Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, bool& b) const;
+  /** \brief Get an arbitrary XML/RPC value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] v Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, XmlRpc::XmlRpcValue& v) const;
+
+  /** \brief Get a std::string vector value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::vector<std::string>& vec) const;
+  /** \brief Get a double vector value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::vector<double>& vec) const;
+  /** \brief Get a float vector value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::vector<float>& vec) const;
+  /** \brief Get a int vector value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::vector<int>& vec) const;
+  /** \brief Get a bool vector value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] vec Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::vector<bool>& vec) const;
+
+  /** \brief Get a string->std::string map value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::map<std::string, std::string>& map) const;
+  /** \brief Get a string->double map value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::map<std::string, double>& map) const;
+  /** \brief Get a string->float map value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::map<std::string, float>& map) const;
+  /** \brief Get a string->int map value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::map<std::string, int>& map) const;
+  /** \brief Get a string->bool map value from the parameter server, with local caching
+   *
+   * This method will cache parameters locally, and subscribe for updates from
+   * the parameter server.  Once the parameter is retrieved for the first time
+   * no subsequent getCached() calls with the same key will query the master --
+   * they will instead look up in the local cache.
+   *
+   * \param key The key to be used in the parameter server's dictionary
+   * \param[out] map Storage for the retrieved value.
+   *
+   * \return true if the parameter value was retrieved, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool getParamCached(const std::string& key, std::map<std::string, bool>& map) const;
+
+  /** \brief Check whether a parameter exists on the parameter server.
+   *
+   * \param key The key to check.
+   *
+   * \return true if the parameter exists, false otherwise
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool hasParam(const std::string& key) const;
+  /** \brief Search up the tree for a parameter with a given key
+   *
+   * This function parameter server's searchParam feature to search up the tree for
+   * a parameter.  For example, if the parameter server has a parameter [/a/b]
+   * and you're in the namespace [/a/c/d], searching for the parameter "b" will
+   * yield [/a/b].  If [/a/c/d/b] existed, that parameter would be returned instead.
+   *
+   * \param key the parameter to search for
+   * \param [out] result the found value (if any)
+   *
+   * \return true if the parameter was found, false otherwise.
+   */
+  bool searchParam(const std::string& key, std::string& result) const;
+  /** \brief Delete a parameter from the parameter server.
+   *
+   * \param key The key to delete.
+   *
+   * \return true if the deletion succeeded, false otherwise.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  bool deleteParam(const std::string& key) const;
+
+  /** \brief Get the keys for all the parameters in the parameter server.
+   * \param keys The keys retrieved.
+   * \return true if the query succeeded, false otherwise.
+   */
+  bool getParamNames(std::vector<std::string>& keys) const;
+
+  /** \brief Assign value from parameter server, with default.
+   *
+   * This method tries to retrieve the indicated parameter value from the
+   * parameter server, storing the result in param_val.  If the value
+   * cannot be retrieved from the server, default_val is used instead.
+   *
+   * \param param_name The key to be searched on the parameter server.
+   * \param[out] param_val Storage for the retrieved value.
+   * \param default_val Value to use if the server doesn't contain this
+   * parameter.
+   * \return true if the parameter was retrieved from the server, false otherwise.
+   * \throws InvalidNameException If the parameter key begins with a tilde, or is an otherwise invalid graph resource name
+   */
+  template<typename T>
+  bool param(const std::string& param_name, T& param_val, const T& default_val) const
+  {
+    if (hasParam(param_name))
     {
-      if (publishers[i] == 0) // empty slot
+      if (getParam(param_name, param_val))
       {
-        publishers[i] = &p;
-        p.id_ = i + 100 + MAX_SUBSCRIBERS;
-        p.nh_ = this;
         return true;
       }
     }
+
+    param_val = default_val;
     return false;
   }
 
-  /* Register a new subscriber */
-  bool subscribe(Subscriber_& s)
-  {
-    for (int i = 0; i < MAX_SUBSCRIBERS; i++)
-    {
-      if (subscribers[i] == 0) // empty slot
-      {
-        subscribers[i] = &s;
-        s.id_ = i + 100;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /* Register a new Service Server */
-  template<typename MReq, typename MRes, typename ObjT>
-  bool advertiseService(ServiceServer<MReq, MRes, ObjT>& srv)
-  {
-    bool v = advertise(srv.pub);
-    bool w = subscribe(srv);
-    return v && w;
-  }
-
-  /* Register a new Service Client */
-  template<typename MReq, typename MRes>
-  bool serviceClient(ServiceClient<MReq, MRes>& srv)
-  {
-    bool v = advertise(srv.pub);
-    bool w = subscribe(srv);
-    return v && w;
-  }
-
-  void negotiateTopics()
-  {
-    rosserial_msgs::TopicInfo ti;
-    int i;
-    for (i = 0; i < MAX_PUBLISHERS; i++)
-    {
-      if (publishers[i] != 0) // non-empty slot
-      {
-        ti.topic_id = publishers[i]->id_;
-        ti.topic_name = (char *) publishers[i]->topic_;
-        ti.message_type = (char *) publishers[i]->msg_->getType();
-        ti.md5sum = (char *) publishers[i]->msg_->getMD5();
-        ti.buffer_size = OUTPUT_SIZE;
-        publish(publishers[i]->getEndpointType(), &ti);
-      }
-    }
-    for (i = 0; i < MAX_SUBSCRIBERS; i++)
-    {
-      if (subscribers[i] != 0) // non-empty slot
-      {
-        ti.topic_id = subscribers[i]->id_;
-        ti.topic_name = (char *) subscribers[i]->topic_;
-        ti.message_type = (char *) subscribers[i]->getMsgType();
-        ti.md5sum = (char *) subscribers[i]->getMsgMD5();
-        ti.buffer_size = INPUT_SIZE;
-        publish(subscribers[i]->getEndpointType(), &ti);
-      }
-    }
-    configured_ = true;
-  }
-
-  virtual int publish(int id, const Msg * msg) override
-  {
-    if (id >= 100 && !configured_)
-      return 0;
-
-    /* serialize message */
-    int l = msg->serialize(message_out + 7);
-
-    /* setup the header */
-    message_out[0] = 0xff;
-    message_out[1] = PROTOCOL_VER;
-    message_out[2] = (uint8_t)((uint16_t)l & 255);
-    message_out[3] = (uint8_t)((uint16_t)l >> 8);
-    message_out[4] = 255 - ((message_out[2] + message_out[3]) % 256);
-    message_out[5] = (uint8_t)((int16_t)id & 255);
-    message_out[6] = (uint8_t)((int16_t)id >> 8);
-
-    /* calculate checksum */
-    int chk = 0;
-    for (int i = 5; i < l + 7; i++)
-      chk += message_out[i];
-    l += 7;
-    message_out[l++] = 255 - (chk % 256);
-
-    if (l <= OUTPUT_SIZE)
-    {
-      hardware_.write(message_out, l);
-      return l;
-    }
-    else
-    {
-      logerror("Message from device dropped: message larger than buffer.");
-      return -1;
-    }
-  }
-
-  /********************************************************************
-   * Logging
+  /**
+   * \brief Return value from parameter server, or default if unavailable.
+   *
+   * This method tries to retrieve the indicated parameter value from the
+   * parameter server. If the parameter cannot be retrieved, \c default_val
+   * is returned instead.
+   *
+   * \param param_name The key to be searched on the parameter server.
+   *
+   * \param default_val Value to return if the server doesn't contain this
+   * parameter.
+   *
+   * \return The parameter value retrieved from the parameter server, or
+   * \c default_val if unavailable.
+   *
+   * \throws InvalidNameException If the parameter key begins with a tilde,
+   * or is an otherwise invalid graph resource name.
    */
-
-protected:
-  void log(char byte, const char * msg)
+  template<typename T>
+  T param(const std::string& param_name, const T& default_val) const
   {
-    rosserial_msgs::Log l;
-    l.level = byte;
-    l.msg = (char*)msg;
-    publish(rosserial_msgs::TopicInfo::ID_LOG, &l);
+      T param_val;
+      param(param_name, param_val, default_val);
+      return param_val;
   }
 
-public:
-  void logdebug(const char* msg)
-  {
-    log(rosserial_msgs::Log::ROSDEBUG, msg);
-  }
-  void loginfo(const char * msg)
-  {
-    log(rosserial_msgs::Log::INFO, msg);
-  }
-  void logwarn(const char *msg)
-  {
-    log(rosserial_msgs::Log::WARN, msg);
-  }
-  void logerror(const char*msg)
-  {
-    log(rosserial_msgs::Log::ERROR, msg);
-  }
-  void logfatal(const char*msg)
-  {
-    log(rosserial_msgs::Log::FATAL, msg);
-  }
-
-  /********************************************************************
-   * Parameters
+  /**
+   * \brief Shutdown every handle created through this NodeHandle.
+   *
+   * This method will unadvertise every topic and service advertisement,
+   * and unsubscribe every subscription created through this NodeHandle.
    */
+  void shutdown();
 
-protected:
-  bool param_received{false};
-  rosserial_msgs::RequestParamResponse req_param_resp{};
+  /** \brief Check whether it's time to exit.
+   *
+   * This method checks to see if both ros::ok() is true and shutdown() has not been called on this NodeHandle, to see whether it's yet time
+   * to exit.  ok() is false once either ros::shutdown() or NodeHandle::shutdown() have been called
+   *
+   * \return true if we're still OK, false if it's time to exit
+   */
+  bool ok() const;
 
-  bool requestParam(const char * name, int time_out =  1000)
-  {
-    param_received = false;
-    rosserial_msgs::RequestParamRequest req;
-    req.name  = (char*)name;
-    publish(TopicInfo::ID_PARAMETER_REQUEST, &req);
-    uint32_t end_time = hardware_.time() + time_out;
-    while (!param_received)
-    {
-      spinOnce();
-      if (hardware_.time() > end_time)
-      {
-        logwarn("Failed to get param: timeout expired");
-        return false;
-      }
-    }
-    return true;
-  }
+private:
+  struct no_validate { };
+  // this is pretty awful, but required to preserve public interface (and make minimum possible changes)
+  std::string resolveName(const std::string& name, bool remap, no_validate) const;
 
-public:
-  bool getParam(const char* name, int* param, int length = 1, int timeout = 1000)
-  {
-    if (requestParam(name, timeout))
-    {
-      if (length == req_param_resp.ints_length)
-      {
-        //copy it over
-        for (int i = 0; i < length; i++)
-          param[i] = req_param_resp.ints[i];
-        return true;
-      }
-      else
-      {
-        logwarn("Failed to get param: length mismatch");
-      }
-    }
-    return false;
-  }
-  bool getParam(const char* name, float* param, int length = 1, int timeout = 1000)
-  {
-    if (requestParam(name, timeout))
-    {
-      if (length == req_param_resp.floats_length)
-      {
-        //copy it over
-        for (int i = 0; i < length; i++)
-          param[i] = req_param_resp.floats[i];
-        return true;
-      }
-      else
-      {
-        logwarn("Failed to get param: length mismatch");
-      }
-    }
-    return false;
-  }
-  bool getParam(const char* name, char** param, int length = 1, int timeout = 1000)
-  {
-    if (requestParam(name, timeout))
-    {
-      if (length == req_param_resp.strings_length)
-      {
-        //copy it over
-        for (int i = 0; i < length; i++)
-          strcpy(param[i], req_param_resp.strings[i]);
-        return true;
-      }
-      else
-      {
-        logwarn("Failed to get param: length mismatch");
-      }
-    }
-    return false;
-  }
-  bool getParam(const char* name, bool* param, int length = 1, int timeout = 1000)
-  {
-    if (requestParam(name, timeout))
-    {
-      if (length == req_param_resp.ints_length)
-      {
-        //copy it over
-        for (int i = 0; i < length; i++)
-          param[i] = req_param_resp.ints[i];
-        return true;
-      }
-      else
-      {
-        logwarn("Failed to get param: length mismatch");
-      }
-    }
-    return false;
-  }
+  void construct(const std::string& ns, bool validate_name);
+  void destruct();
+
+  void initRemappings(const M_string& remappings);
+
+  std::string remapName(const std::string& name) const;
+
+  std::string namespace_;
+  std::string unresolved_namespace_;
+  M_string remappings_;
+  M_string unresolved_remappings_;
+
+  CallbackQueueInterface* callback_queue_;
+
+  NodeHandleBackingCollection* collection_;
+
+  bool ok_;
 };
 
 }
 
-#endif
+#endif // ROSCPP_NODE_HANDLE_H
