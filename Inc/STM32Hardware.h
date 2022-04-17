@@ -35,7 +35,7 @@
 #ifndef ROS_STM32_HARDWARE_H_
 #define ROS_STM32_HARDWARE_H_
 
-#define STM32F4xx  // Change for your device
+#define STM32F3xx  // Change for your device
 #ifdef STM32F3xx
 #include "stm32f3xx_hal.h"
 #include "stm32f3xx_hal_uart.h"
@@ -49,9 +49,9 @@
 #include "stm32f7xx_hal_uart.h"
 #endif /* STM32F7xx */
 
-extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
 
-class STM32Hardware{
+class STM32Hardware {
   protected:
     UART_HandleTypeDef *huart;
 
@@ -66,7 +66,7 @@ class STM32Hardware{
 
   public:
     STM32Hardware():
-      huart(&huart1), rind(0), twind(0), tfind(0){
+      huart(&huart2), rind(0), twind(0), tfind(0){
     }
 
     STM32Hardware(UART_HandleTypeDef *huart_):

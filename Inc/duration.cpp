@@ -32,64 +32,52 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _ROS_SERVICE_CLIENT_H_
-#define _ROS_SERVICE_CLIENT_H_
-
-#include "rosserial_msgs/TopicInfo.h"
-
-#include "ros/publisher.h"
-#include "ros/subscriber.h"
+#include <math.h>
+#include "ros/duration.h"
 
 namespace ros
 {
-
-template<typename MReq , typename MRes>
-class ServiceClient : public Subscriber_
+void normalizeSecNSecSigned(int32_t &sec, int32_t &nsec)
 {
-public:
-  ServiceClient(const char* topic_name) :
-    pub(topic_name, &req, rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT + rosserial_msgs::TopicInfo::ID_PUBLISHER)
-  {
-    this->topic_ = topic_name;
-    this->waiting = true;
-  }
+  int32_t nsec_part = nsec;
+  int32_t sec_part = sec;
 
-  virtual void call(const MReq & request, MRes & response) override
+  while (nsec_part > 1000000000L)
   {
-    if (!pub.nh_->connected()) return;
-    ret = &response;
-    waiting = true;
-    pub.publish(&request);
-    while (waiting && pub.nh_->connected())
-      if (pub.nh_->spinOnce() < 0) break;
+    nsec_part -= 1000000000L;
+    ++sec_part;
   }
-
-  // these refer to the subscriber
-  virtual void callback(unsigned char *data) override
+  while (nsec_part < 0)
   {
-    ret->deserialize(data);
-    waiting = false;
+    nsec_part += 1000000000L;
+    --sec_part;
   }
-  virtual const char * getMsgType() override
-  {
-    return this->resp.getType();
-  }
-  virtual const char * getMsgMD5() override
-  {
-    return this->resp.getMD5();
-  }
-  virtual int getEndpointType() override
-  {
-    return rosserial_msgs::TopicInfo::ID_SERVICE_CLIENT + rosserial_msgs::TopicInfo::ID_SUBSCRIBER;
-  }
-
-  MReq req;
-  MRes resp;
-  MRes * ret;
-  bool waiting;
-  Publisher pub;
-};
-
+  sec = sec_part;
+  nsec = nsec_part;
 }
 
-#endif
+Duration& Duration::operator+=(const Duration &rhs)
+{
+  sec += rhs.sec;
+  nsec += rhs.nsec;
+  normalizeSecNSecSigned(sec, nsec);
+  return *this;
+}
+
+Duration& Duration::operator-=(const Duration &rhs)
+{
+  sec += -rhs.sec;
+  nsec += -rhs.nsec;
+  normalizeSecNSecSigned(sec, nsec);
+  return *this;
+}
+
+Duration& Duration::operator*=(double scale)
+{
+  sec *= scale;
+  nsec *= scale;
+  normalizeSecNSecSigned(sec, nsec);
+  return *this;
+}
+
+}
