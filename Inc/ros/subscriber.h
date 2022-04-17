@@ -1,122 +1,140 @@
 /*
- * Copyright (C) 2009, Willow Garage, Inc.
+ * Software License Agreement (BSD License)
+ *
+ * Copyright (c) 2011, Willow Garage, Inc.
+ * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *   * Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the names of Stanford University or Willow Garage, Inc. nor the names of its
- *     contributors may be used to endorse or promote products derived from
- *     this software without specific prior written permission.
+ * modification, are permitted provided that the following conditions
+ * are met:
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above
+ *    copyright notice, this list of conditions and the following
+ *    disclaimer in the documentation and/or other materials provided
+ *    with the distribution.
+ *  * Neither the name of Willow Garage, Inc. nor the names of its
+ *    contributors may be used to endorse or promote prducts derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef ROSCPP_SUBSCRIBER_HANDLE_H
-#define ROSCPP_SUBSCRIBER_HANDLE_H
+#ifndef ROS_SUBSCRIBER_H_
+#define ROS_SUBSCRIBER_H_
 
-#include "common.h"
-#include "ros/forwards.h"
-#include "ros/subscription_callback_helper.h"
+#include "rosserial_msgs/TopicInfo.h"
 
 namespace ros
 {
 
-/**
- * \brief Manages an subscription callback on a specific topic.
- *
- * A Subscriber should always be created through a call to NodeHandle::subscribe(), or copied from one
- * that was. Once all copies of a specific
- * Subscriber go out of scope, the subscription callback associated with that handle will stop
- * being called.  Once all Subscriber for a given topic go out of scope the topic will be unsubscribed.
- */
-class ROSCPP_DECL Subscriber
+/* Base class for objects subscribers. */
+class Subscriber_
 {
 public:
-  Subscriber() {}
-  Subscriber(const Subscriber& rhs);
-  ~Subscriber();
-  Subscriber& operator=(const Subscriber& other) = default;
+  virtual void callback(unsigned char *data) = 0;
+  virtual int getEndpointType() = 0;
 
-  /**
-   * \brief Unsubscribe the callback associated with this Subscriber
-   *
-   * This method usually does not need to be explicitly called, as automatic shutdown happens when
-   * all copies of this Subscriber go out of scope
-   *
-   * This method overrides the automatic reference counted unsubscribe, and immediately
-   * unsubscribes the callback associated with this Subscriber
-   */
-  void shutdown();
+  // id_ is set by NodeHandle when we advertise
+  int id_;
 
-  std::string getTopic() const;
+  virtual const char * getMsgType() = 0;
+  virtual const char * getMsgMD5() = 0;
+  const char * topic_;
+};
 
-  /**
-   * \brief Returns the number of publishers this subscriber is connected to
-   */
-  uint32_t getNumPublishers() const;
+/* Bound function subscriber. */
+template<typename MsgT, typename ObjT = void>
+class Subscriber: public Subscriber_
+{
+public:
+  typedef void(ObjT::*CallbackT)(const MsgT&);
+  MsgT msg;
 
-  operator void*() const { return (impl_ && impl_->isValid()) ? (void*)1 : (void*)0; }
-
-  bool operator<(const Subscriber& rhs) const
+  Subscriber(const char * topic_name, CallbackT cb, ObjT* obj, int endpoint = rosserial_msgs::TopicInfo::ID_SUBSCRIBER) :
+    cb_(cb),
+    obj_(obj),
+    endpoint_(endpoint)
   {
-    return impl_ < rhs.impl_;
+    topic_ = topic_name;
+  };
+
+  virtual void callback(unsigned char* data) override
+  {
+    msg.deserialize(data);
+    (obj_->*cb_)(msg);
   }
 
-  bool operator==(const Subscriber& rhs) const
+  virtual const char * getMsgType() override
   {
-    return impl_ == rhs.impl_;
+    return this->msg.getType();
   }
-
-  bool operator!=(const Subscriber& rhs) const
+  virtual const char * getMsgMD5() override
   {
-    return impl_ != rhs.impl_;
+    return this->msg.getMD5();
+  }
+  virtual int getEndpointType() override
+  {
+    return endpoint_;
   }
 
 private:
-
-  Subscriber(const std::string& topic, const NodeHandle& node_handle, 
-	     const SubscriptionCallbackHelperPtr& helper);
-
-  class Impl
-  {
-  public:
-    Impl();
-    ~Impl();
-
-    void unsubscribe();
-    bool isValid() const;
-
-    std::string topic_;
-    NodeHandlePtr node_handle_;
-    SubscriptionCallbackHelperPtr helper_;
-    bool unsubscribed_;
-  };
-  typedef boost::shared_ptr<Impl> ImplPtr;
-  typedef boost::weak_ptr<Impl> ImplWPtr;
-
-  ImplPtr impl_;
-
-  friend class NodeHandle;
-  friend class NodeHandleBackingCollection;
+  CallbackT cb_;
+  ObjT* obj_;
+  int endpoint_;
 };
-typedef std::vector<Subscriber> V_Subscriber;
+
+/* Standalone function subscriber. */
+template<typename MsgT>
+class Subscriber<MsgT, void>: public Subscriber_
+{
+public:
+  typedef void(*CallbackT)(const MsgT&);
+  MsgT msg;
+
+  Subscriber(const char * topic_name, CallbackT cb, int endpoint = rosserial_msgs::TopicInfo::ID_SUBSCRIBER) :
+    cb_(cb),
+    endpoint_(endpoint)
+  {
+    topic_ = topic_name;
+  };
+
+  virtual void callback(unsigned char* data) override
+  {
+    msg.deserialize(data);
+    this->cb_(msg);
+  }
+
+  virtual const char * getMsgType() override
+  {
+    return this->msg.getType();
+  }
+  virtual const char * getMsgMD5() override
+  {
+    return this->msg.getMD5();
+  }
+  virtual int getEndpointType() override
+  {
+    return endpoint_;
+  }
+
+private:
+  CallbackT cb_;
+  int endpoint_;
+};
 
 }
 
-#endif // ROSCPP_PUBLISHER_HANDLE_H
-
-
+#endif
