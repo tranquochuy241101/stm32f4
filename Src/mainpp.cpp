@@ -15,6 +15,9 @@
 
 ros::NodeHandle nh;
 
+//float v;
+//float u;
+
 void vel_cb(const std_msgs::UInt8& msg);
 
 uint16_t count = 0;
@@ -23,9 +26,9 @@ std_msgs::String str_msg;
 ros::Publisher chatter("chatter", &str_msg);
 char hello[] = "Hello world!";
 
-std_msgs::String str_msg_1;
-ros::Publisher chatter_1("chatter_1", &str_msg_1);
-char hello_1[] = "Hello world Gay!";
+//std_msgs::String str_msg_1;
+//ros::Publisher chatter_1("chatter_1", &str_msg_1);
+//char hello_1[] = "Hello world 1!";
 
 //Subscriber
 //ros::Subscriber<std_msgs::UInt8> vel_sub("velocity", &vel_cb);
@@ -46,25 +49,22 @@ void setup(void)
 {
   nh.initNode();
   nh.advertise(chatter);
-  nh.advertise(chatter_1);
+//  nh.advertise(chatter_1);
   nh.advertise(pid_pub);
 //	nh.subscribe(vel_sub);
 }
 
 void loop(void)
 {
-	pid_msg.input_setpoint = 3;
-	pid_msg.output_controller = 4;
-	pid_msg.output_rpm = count;
+	pid_msg.input_setpoint = 150;
+	pid_msg.output_controller = u;
+	pid_msg.output_rpm = v;
 	str_msg.data = hello;
-	str_msg_1.data = hello_1;
+	//str_msg_1.data = hello_1;
 	chatter.publish(&str_msg);
-	chatter_1.publish(&str_msg_1);
+	//chatter_1.publish(&str_msg_1);
 	pid_pub.publish(&pid_msg);
 	nh.spinOnce();
-	count = count + 10;
-	HAL_Delay(50);
-	printf("Gay");
 }
 
 void vel_cb(const std_msgs::UInt8& msg){

@@ -12,6 +12,9 @@
  extern "C" {
 #endif
 
+extern float v;
+extern float u;
+
 void setup(void);
 void loop(void);
 
