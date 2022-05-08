@@ -12,11 +12,11 @@ namespace pid_plot
   class Num : public ros::Msg
   {
     public:
-      typedef uint16_t _output_rpm_type;
+      typedef float _output_rpm_type;
       _output_rpm_type output_rpm;
-      typedef uint16_t _output_controller_type;
+      typedef float _output_controller_type;
       _output_controller_type output_controller;
-      typedef uint16_t _input_setpoint_type;
+      typedef float _input_setpoint_type;
       _input_setpoint_type input_setpoint;
 
     Num():
@@ -29,14 +29,35 @@ namespace pid_plot
     virtual int serialize(unsigned char *outbuffer) const override
     {
       int offset = 0;
-      *(outbuffer + offset + 0) = (this->output_rpm >> (8 * 0)) & 0xFF;
-      *(outbuffer + offset + 1) = (this->output_rpm >> (8 * 1)) & 0xFF;
+      union {
+        float real;
+        uint32_t base;
+      } u_output_rpm;
+      u_output_rpm.real = this->output_rpm;
+      *(outbuffer + offset + 0) = (u_output_rpm.base >> (8 * 0)) & 0xFF;
+      *(outbuffer + offset + 1) = (u_output_rpm.base >> (8 * 1)) & 0xFF;
+      *(outbuffer + offset + 2) = (u_output_rpm.base >> (8 * 2)) & 0xFF;
+      *(outbuffer + offset + 3) = (u_output_rpm.base >> (8 * 3)) & 0xFF;
       offset += sizeof(this->output_rpm);
-      *(outbuffer + offset + 0) = (this->output_controller >> (8 * 0)) & 0xFF;
-      *(outbuffer + offset + 1) = (this->output_controller >> (8 * 1)) & 0xFF;
+      union {
+        float real;
+        uint32_t base;
+      } u_output_controller;
+      u_output_controller.real = this->output_controller;
+      *(outbuffer + offset + 0) = (u_output_controller.base >> (8 * 0)) & 0xFF;
+      *(outbuffer + offset + 1) = (u_output_controller.base >> (8 * 1)) & 0xFF;
+      *(outbuffer + offset + 2) = (u_output_controller.base >> (8 * 2)) & 0xFF;
+      *(outbuffer + offset + 3) = (u_output_controller.base >> (8 * 3)) & 0xFF;
       offset += sizeof(this->output_controller);
-      *(outbuffer + offset + 0) = (this->input_setpoint >> (8 * 0)) & 0xFF;
-      *(outbuffer + offset + 1) = (this->input_setpoint >> (8 * 1)) & 0xFF;
+      union {
+        float real;
+        uint32_t base;
+      } u_input_setpoint;
+      u_input_setpoint.real = this->input_setpoint;
+      *(outbuffer + offset + 0) = (u_input_setpoint.base >> (8 * 0)) & 0xFF;
+      *(outbuffer + offset + 1) = (u_input_setpoint.base >> (8 * 1)) & 0xFF;
+      *(outbuffer + offset + 2) = (u_input_setpoint.base >> (8 * 2)) & 0xFF;
+      *(outbuffer + offset + 3) = (u_input_setpoint.base >> (8 * 3)) & 0xFF;
       offset += sizeof(this->input_setpoint);
       return offset;
     }
@@ -44,20 +65,44 @@ namespace pid_plot
     virtual int deserialize(unsigned char *inbuffer) override
     {
       int offset = 0;
-      this->output_rpm =  ((uint16_t) (*(inbuffer + offset)));
-      this->output_rpm |= ((uint16_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      union {
+        float real;
+        uint32_t base;
+      } u_output_rpm;
+      u_output_rpm.base = 0;
+      u_output_rpm.base |= ((uint32_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      u_output_rpm.base |= ((uint32_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      u_output_rpm.base |= ((uint32_t) (*(inbuffer + offset + 2))) << (8 * 2);
+      u_output_rpm.base |= ((uint32_t) (*(inbuffer + offset + 3))) << (8 * 3);
+      this->output_rpm = u_output_rpm.real;
       offset += sizeof(this->output_rpm);
-      this->output_controller =  ((uint16_t) (*(inbuffer + offset)));
-      this->output_controller |= ((uint16_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      union {
+        float real;
+        uint32_t base;
+      } u_output_controller;
+      u_output_controller.base = 0;
+      u_output_controller.base |= ((uint32_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      u_output_controller.base |= ((uint32_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      u_output_controller.base |= ((uint32_t) (*(inbuffer + offset + 2))) << (8 * 2);
+      u_output_controller.base |= ((uint32_t) (*(inbuffer + offset + 3))) << (8 * 3);
+      this->output_controller = u_output_controller.real;
       offset += sizeof(this->output_controller);
-      this->input_setpoint =  ((uint16_t) (*(inbuffer + offset)));
-      this->input_setpoint |= ((uint16_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      union {
+        float real;
+        uint32_t base;
+      } u_input_setpoint;
+      u_input_setpoint.base = 0;
+      u_input_setpoint.base |= ((uint32_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      u_input_setpoint.base |= ((uint32_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      u_input_setpoint.base |= ((uint32_t) (*(inbuffer + offset + 2))) << (8 * 2);
+      u_input_setpoint.base |= ((uint32_t) (*(inbuffer + offset + 3))) << (8 * 3);
+      this->input_setpoint = u_input_setpoint.real;
       offset += sizeof(this->input_setpoint);
      return offset;
     }
 
     virtual const char * getType() override { return "pid_plot/Num"; };
-    virtual const char * getMD5() override { return "5652f9c0d51f72a895489fcab75162b1"; };
+    virtual const char * getMD5() override { return "074b7ae52738348822edeb68a11cd203"; };
 
   };
 
