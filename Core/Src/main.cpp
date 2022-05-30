@@ -39,7 +39,7 @@ static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_USART2_UART_Init(void);
 
-float Setpoint_value=-150;
+float Setpoint_value= 150;
 
 //
 float u_prev,e,e_prev,P_control,I_control = 0;
@@ -47,13 +47,13 @@ float v = 0;
 float u = 0;
 
 //Constant Kp
-float Kp = 0;
+float Kp = 0.15;
 //Constant Ki
-float Ki = 0;
+float Ki = 0.15;
 //Constant Kd
-float Kd = 0;
+float Kd = 0.55;
 
-volatile uint16_t Encoder_cnt,duty,en,cnt=0;
+volatile uint16_t Encoder_cnt,duty,en,cnt = 0;
 
 int main(void)
 {
@@ -77,14 +77,16 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim3,TIM_CHANNEL_1 | TIM_CHANNEL_2);
   HAL_TIM_Base_Start_IT(&htim5);
 
-  //
   setup();
+
   while (1)
   {
-	  if(cnt == 1000)
-		  {
+	  if(cnt == 5000)
+	  {
 		  HAL_TIM_Base_Stop_IT(&htim5);
-		  htim2.Instance->CCR1 = 0;}
+		  htim2.Instance->CCR1 = 0;			//stop PID run
+	  }
+	  loop();
   }
   /* USER CODE END 3 */
 }
@@ -93,7 +95,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	if(htim->Instance == htim5.Instance)
 	{
-			cnt ++;
+			cnt++;
 			Encoder_cnt = __HAL_TIM_GET_COUNTER(&htim3);
 			v = (Encoder_cnt*3000/960);
 			e = Setpoint_value - v;									// e(t)=r(t) - v(t)
@@ -106,7 +108,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 			e_prev = e;
 			u_prev = u;
 			// Send and recieve data from ROS
-			loop();
+//			loop();
 
 			//Convert signal in RPM to duty cycle
 			duty = (int)(u*600/208);				// u/176 = x/600 => x = u*600/176
@@ -135,28 +137,26 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLN = 192;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
-
   /** Initializes the CPU, AHB and APB buses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
@@ -165,8 +165,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
-
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
   {
     Error_Handler();
   }
